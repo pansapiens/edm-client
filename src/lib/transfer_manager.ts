@@ -30,9 +30,8 @@ export class TransferManager extends events.EventEmitter {
                 settings.conf.serverSettings.token);
         }
 
-        this.queue = new TransferQueue(queue_id, this);
+        //this.queue = new TransferQueue(queue_id, this);
 
-        /*
         // An implementation of the job queue as a stream.Duplex.
         // Unlike the alternative TransferQueue (async.queue) implementation
         // which pushes jobs to this manager as a worker, here we pull jobs off
@@ -53,7 +52,6 @@ export class TransferManager extends events.EventEmitter {
         //         this.transferFile(transfer);
         //     }
         // });
-        */
 
     }
 
@@ -90,6 +88,7 @@ export class TransferManager extends events.EventEmitter {
             // TEST: This is the wrong way to read from the stream (popping off the internal array) !
             //       However, if this.queue.read() fails to produce data since the stream is 'ended', this works
             //let transfer = this.queue.items.pop();
+
             this.transferFile(transfer);
         }
     }

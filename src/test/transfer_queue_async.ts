@@ -10,7 +10,7 @@ import {EDMFileCache} from "../lib/cache";
 
 var eventDebug = require('event-debug');
 
-describe("The transfer queue ", function () {
+describe.skip("The transfer queue ", function () {
     let host: EDMDestinationHost;
     let destination: EDMDestination;
     let source: EDMSource;

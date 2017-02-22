@@ -15,7 +15,7 @@ import {DummyTransfer} from "../lib/transfer_methods/dummy_transfer";
 
 var eventDebug = require('event-debug');
 
-describe.skip("The transfer stream ", function () {
+describe("The transfer stream ", function () {
     let host: EDMDestinationHost;
     let destination: EDMDestination;
     let source: EDMSource;
@@ -251,7 +251,7 @@ describe.skip("The transfer stream ", function () {
         tq.write(transfer_job);
     });
 
-    it.skip("should add a file to the transfer queue when it has pending file transfers", function (done) {
+    it("should add a file to the transfer queue when it has pending file transfers", function (done) {
         setupSettings();
 
         let now = Math.floor(Date.now() / 1000);
