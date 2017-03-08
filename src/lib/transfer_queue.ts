@@ -6,7 +6,6 @@ import * as path from 'path';
 import * as events from 'events';
 import * as AsyncQueue from 'async/queue';
 import * as _ from "lodash";
-const PouchDB = require('pouchdb-node');
 
 import {ApolloQueryResult} from "apollo-client";
 
@@ -14,6 +13,7 @@ import {settings} from "./settings";
 import {TransferMethod} from "./transfer_methods/transfer_method";
 import {TransferMethodPlugins} from "./transfer_methods/transfer_method_plugins";
 import {EDMQueries} from "./queries";
+import {LocalCache} from "./cache";
 
 /**
  * This task _queue implementation implements parts of a stream.Duplex
@@ -91,7 +91,7 @@ export class TransferQueueManager extends events.EventEmitter  { // implements I
 
     queueTask(job: FileTransferJob) {
         this._queue.push(job);
-        return this.isPaused() || this.isSaturated();
+        return !(this.isPaused() || this.isSaturated());
     }
 
     // write(job: FileTransferJob) {
@@ -150,14 +150,18 @@ export class TransferQueueManager extends events.EventEmitter  { // implements I
 
     private onUpdateProgress(file_transfer_id: string, bytes_transferred: number) {
         console.info(`Transfer {FileTransferJob: ${file_transfer_id}, ` +
-                     `queue_id: ${this._queue.queue_id}, ` +
+                     `queue_id: ${this.queue_id}, ` +
                      `bytes_transferred: ${bytes_transferred}}`);
 
         let cachedTransfer = {
-            id: file_transfer_id,
+            _id: file_transfer_id,
             bytes_transferred: bytes_transferred,
             status: "uploading"} as EDMCachedFileTransfer;
-        EDMQueries.updateFileTransfer(cachedTransfer)
+
+        LocalCache.cache.updateFileTransfers([cachedTransfer])
+            .then((result) => {
+                return EDMQueries.updateFileTransfer(cachedTransfer);
+            })
             .then((result) => {
                 console.log(`${JSON.stringify(result)}`);
             })
@@ -172,21 +176,26 @@ export class TransferQueueManager extends events.EventEmitter  { // implements I
         //       (Retries at Apollo client level ?
         //        Persist in PouchDB and periodically retry until server responds, then remove record ? )
         console.info(`Transfer complete {FileTransferJob: ${file_transfer_id}, ` +
-                     `queue_id: ${this._queue.queue_id}, ` +
+                     `queue_id: ${this.queue_id}, ` +
                      `bytes_transferred: ${bytes_transferred}}`);
 
         let cachedTransfer = {
-            id: file_transfer_id,
+            _id: file_transfer_id,
             bytes_transferred: bytes_transferred,
             status: "complete"} as EDMCachedFileTransfer;
-        EDMQueries.updateFileTransfer(cachedTransfer)
+
+        LocalCache.cache.updateFileTransfers([cachedTransfer])
+            .then((result) => {
+                this.emit('transfer_complete', file_transfer_id, bytes_transferred);
+                return EDMQueries.updateFileTransfer(cachedTransfer);
+            })
             .then((result) => {
                 console.log(`${JSON.stringify(result)}`);
             })
             .catch((error) => {
                 console.log(`${error}`);
             });
-        this.emit('transfer_complete', file_transfer_id, bytes_transferred);
+        // this.emit('transfer_complete', file_transfer_id, bytes_transferred);
     }
 }
 
@@ -204,14 +213,13 @@ export class QueuePool {
         return this.managers[queue_id];
     }
 
-    createTransferJob(source: EDMSource,
-                      cachedFile: EDMCachedFile,
+    createTransferJob(cachedFile: EDMCachedFile,
                       transfer: EDMCachedFileTransfer): FileTransferJob {
         return {
             cached_file_id: cachedFile._id,
-            source_id: source.id,
+            source_id: cachedFile.source_id,
             destination_id: transfer.destination_id,
-            file_transfer_id: transfer.id,
+            file_transfer_id: transfer._id,
         } as FileTransferJob;
     }
 
@@ -227,7 +235,7 @@ export class QueuePool {
         }
 
         return EDMQueries.updateFileTransfer({
-                id: transfer_job.file_transfer_id,
+                _id: transfer_job.file_transfer_id,
                 bytes_transferred: 0,
                 status: 'queued'
             } as EDMCachedFileTransfer)

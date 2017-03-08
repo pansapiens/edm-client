@@ -8,6 +8,8 @@ import * as fs from "fs";
 import * as path from "path";
 
 const PouchDB = require('pouchdb-node');
+PouchDB.plugin(require('pouchdb-upsert-bulk'));
+
 const querystring = require('querystring');
 
 import EDMFile from './file_tracking';
@@ -15,36 +17,28 @@ import {settings} from "./settings";
 import {TransferQueuePool} from "./transfer_queue";
 
 export class EDMFileCache {
-    readonly db_name: string;
-    readonly source: EDMSource;
-    readonly _db: any; // PouchDB.Database<EDMCachedFile>;
+    readonly _file_db: any; // PouchDB.Database<EDMCachedFile>;
+    readonly _file_transfer_db: any;
     private changes: any;
 
     //public static caches = {};
 
-    constructor(source: EDMSource) {
+    constructor() {
         //EDMFileCache.caches[source.id] = this;
 
-        this.source = source;
-        this.db_name = querystring.escape(source.basepath);
-        //this.db_name = querystring.escape(source.id);
-        const db_base = path.normalize(path.join(
-            settings.conf.appSettings.dataDir, 'data'));
-        if (!fs.existsSync(db_base)) {
-            fs.mkdirSync(db_base, '700');
-        }
-
-        const db_path = path.join(db_base, this.db_name);
-        this._db = new PouchDB(db_path);
-        this.changes = this._db.changes({live: true, include_docs: true})
+        const file_db_path = this._getOrCreateDbPath('files');
+        this._file_db = new PouchDB(file_db_path);
+        this.changes = this._file_db.changes({live: true, include_docs: true})
             .on('change', (change) => {
-
                 // console.log(`PouchDB on change event: ${this.basepath}\n${JSON.stringify(change)}\n`);
 
                 let cachedFile = change.doc as EDMCachedFile;
-                if (!change.deleted && cachedFile.transfers != null) {
-                    this.queuePendingTransfers(cachedFile);
-                }
+                this.getFileTransfersForFile(cachedFile).then((transfers) => {
+                    if (!change.deleted) {
+                        this.queuePendingTransfers(cachedFile, transfers);
+                    }
+                });
+
             })
             .on('complete', (info) => {
                 console.info(info);
@@ -53,22 +47,64 @@ export class EDMFileCache {
             .on('error', (error) => {
                 console.error(`pouchdb changes handling error: ${error}`)
             });
+
+        const file_transfer_db_path = this._getOrCreateDbPath('file_transfers');
+        this._file_transfer_db = new PouchDB(file_transfer_db_path);
     }
 
-    addFile(file: EDMFile | EDMCachedFile) {
+    private _getOrCreateDbPath(db_name: string, data_path?: string) {
+        if (data_path == null) data_path = settings.conf.appSettings.dataDir;
+        const db_base = path.normalize(path.join(data_path, 'data'));
+        if (!fs.existsSync(db_base)) {
+            fs.mkdirSync(db_base, '700');
+        }
+        return path.join(db_base, db_name);
+    }
+
+    addFile(file: EDMFile | EDMCachedFile): Promise<any> {
         if (file instanceof EDMFile) {
-            return this._db.put(file.getPouchDocument());
+            return this._file_db.put(file.getPouchDocument());
         } else {
-            return this._db.put(file as EDMCachedFile);
+            return this._file_db.put(file as EDMCachedFile);
         }
     }
 
-    getEntry(file: EDMFile | EDMCachedFile) {
-        return this._db.get(file._id);
+    getFile(file: EDMFile | EDMCachedFile): Promise<EDMCachedFile> {
+        return this._file_db.get(file._id);
     }
 
-    queuePendingTransfers(cachedFile: EDMCachedFile) {
-        for (let xfer of cachedFile.transfers) {
+    getFileTransfersForFile(cachedFile: EDMCachedFile): Promise<EDMCachedFileTransfer[]> {
+        // This method will be deprecated. The pouchdb-find package should be used instead.
+        // return LocalCache.cache._file_transfer_db.query((doc) => {
+        //     var emit: any; // workaround to make TypeScript happy
+        //     emit(doc.file_local_id);
+        // }, {key: cachedFile._id})
+        //// .then((result) => {
+        ////     return result.rows;
+        //// });
+
+        // allDocs method - probably more efficient if the number of simultaneous transfers
+        // is small and we periodically cleanup delete completed transfers.
+        return LocalCache.cache._file_transfer_db.allDocs({include_docs: true})
+            .then((result) => {
+                let transfers: EDMCachedFileTransfer[] = [];
+                for (let doc of result.rows) {
+                    if (doc.doc.file_local_id == cachedFile._id) {
+                        transfers.push(doc.doc as EDMCachedFileTransfer);
+                    }
+                }
+                return transfers;
+            });
+    }
+
+    updateFileTransfers(transfers: EDMCachedFileTransfer[]): Promise<any> {
+        return this._file_transfer_db.upsertBulk(transfers);
+    }
+
+    queuePendingTransfers(cachedFile: EDMCachedFile, transfers: EDMCachedFileTransfer[]) {
+        if (transfers == null) return;
+
+        for (let xfer of transfers) {
             if (xfer.status === 'new') {
                 // TODO: How do we ensure jobs that fail to _queue (backpressure or real failure) get requeued later ?
                 // TODO: How do we prevent a transfer being queued twice ?
@@ -76,7 +112,7 @@ export class EDMFileCache {
                 // the file again to retrieve new transfer statuses ?) ?
 
                 //let queue_unsaturated: boolean = true;
-                let xfer_job = TransferQueuePool.createTransferJob(this.source, cachedFile, xfer);
+                let xfer_job = TransferQueuePool.createTransferJob(cachedFile, xfer);
                 TransferQueuePool.queueTransfer(xfer_job)
                     .then((result) => {
                         // update PouchDB with file transfer status = queued
@@ -96,9 +132,19 @@ export class EDMFileCache {
                 //     // TODO: If the the _queue is saturated (highWaterMark exceeded), we need to wait
                 //     //       until it emits the 'drain' event before attempting to _queue more to respect
                 //     //       back pressure.
-                //     throw Error(`[Not implemented]: TransferQueues ${xfer.destination_id} is saturated. File transfer ${xfer.id} must be queued later`);
+                //     throw Error(`[Not implemented]: TransferQueues ${xfer.destination_id} is saturated. File transfer ${xfer._id} must be queued later`);
                 // }
             }
         }
     }
 }
+
+export class CacheProxy {
+    private _cache: EDMFileCache;
+    public get cache(): EDMFileCache {
+        if (this._cache == null) this._cache = new EDMFileCache();
+        return this._cache;
+    }
+}
+
+export const LocalCache = new CacheProxy();

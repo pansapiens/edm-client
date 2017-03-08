@@ -119,7 +119,8 @@ describe("A mock EDM backend service", function () {
         };
         settings.parseInitArgs(initArgs);
 
-        let file = new EDMFile(dataDir, path.basename(tmpFile.name));
+        const source: EDMSource = {basepath: dataDir, id: 'some_source_id'} as EDMSource;
+        let file = new EDMFile(source, path.basename(tmpFile.name));
         let promise = EDMQueries.registerFileWithServer(file, 'test source', mutation_id)
             .then((value) => {
                 expect(JSON.stringify(value)).to.equal(JSON.stringify(expectedReplyData));

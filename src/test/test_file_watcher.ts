@@ -8,6 +8,7 @@ import {settings} from "../lib/settings";
 import {EDMFileWatcher} from "../lib/file_watcher";
 import EDMFile from "../lib/file_tracking";
 import {EDMQueries} from "../lib/queries";
+import {LocalCache} from "../lib/cache";
 
 describe("file watcher", function () {
     const dataDir = tmp.dirSync({ prefix: 'edmtest_'}).name;
@@ -62,7 +63,7 @@ describe("file watcher", function () {
                                 {
                                     "node": {
                                         "status": "new" as TransferStatus,
-                                        "id": "RmlsZVRyYW5zZmVyOmE4MGQ2OTkzLWM0YWEtNDUwNC1iNDYwLWMzNWFjYzgzZjgwOA==",
+                                        "id": "some_file_transfer_uuid__new_massive_1",
                                         "destination": {
                                             "host": {
                                                 "id": "massive"
@@ -74,7 +75,7 @@ describe("file watcher", function () {
                                 {
                                     "node": {
                                         "status": "queued" as TransferStatus,
-                                        "id": "RmlsZVRyYW5zZmVyOmE4MGQ2OTkzLWM0YWEtNDUwNC1iNDYwLWMzNWFjYzgzZjgwOA==",
+                                        "id": "some_file_transfer_uuid__queued_mytardis_1",
                                         "destination": {
                                             "host": {
                                                 "id": "mytardis"
@@ -107,15 +108,20 @@ describe("file watcher", function () {
         };
         let watcher = new EDMFileWatcher(source);
 
-        const edmFile: EDMFile = new EDMFile(dirToIngest, path.basename(tmpFile));
+        const edmFile: EDMFile = new EDMFile(source, path.basename(tmpFile));
         watcher.registerAndCache(edmFile)
             .then((backendResponse) => {
-                return watcher.cache.getEntry(edmFile);
+                return watcher.cache.getFile(edmFile);
             }).then((doc) => {
-                const expected = EDMQueries.unpackFileTransferResponse(replyData.data.createOrUpdateFile.file.file_transfers);
-                expect(doc.transfers[0].status).to.equal(expected[0].status);
-                expect(doc.transfers[1].status).to.equal(expected[1].status);
                 console.log(doc);
+                return LocalCache.cache.getFileTransfersForFile(doc as EDMCachedFile);
+            })
+            .then((cachedTransferRecords) => {
+                const expected = EDMQueries.unpackFileTransferResponse(replyData.data.createOrUpdateFile.file.file_transfers);
+                expect(cachedTransferRecords[0].status).to.equal(expected[0].status);
+                expect(cachedTransferRecords[0]._id).to.equal(expected[0]._id);
+                expect(cachedTransferRecords[1].status).to.equal(expected[1].status);
+                expect(cachedTransferRecords[1]._id).to.equal(expected[1]._id);
                 done();
             })
             .catch((error) => {
@@ -129,11 +135,11 @@ describe("file watcher", function () {
         tmpFile = createNewTmpfile();
 
         console.log(settings.conf.appSettings.dataDir);
-        let watcher = new EDMFileWatcher({'basepath': dirToIngest});
+        let watcher = new EDMFileWatcher({basepath: dirToIngest, id: 'some_source_id'} as EDMSource);
         watcher.endWalk = () => {
             const numfiles = watcher.lastWalkItems.length;
             expect(numfiles).to.be.greaterThan(1);
-            watcher.cache._db.allDocs().then((result) => {
+            watcher.cache._file_db.allDocs().then((result) => {
                 console.log(`allDocs: ${JSON.stringify(result)}`);
                 console.log(`numfiles: ${numfiles}`);
                 // db adds aren't always complete yet, can be improved

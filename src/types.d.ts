@@ -43,18 +43,22 @@ type FileStatus =
 interface EDMCachedFile {
     _id: string;       // file path
     _rev?: string;     // PouchDB revision
+    remote_id: string; // ID assigned by backend server
+    source_id: string;
     mtime: number;
     size: number;
     // status: FileStatus;
     hash: string;
-    transfers: EDMCachedFileTransfer[];
+    // transfers: EDMCachedFileTransfer[];
 }
 
 type TransferStatus = "new" | "queued" | "uploading" | "complete" | "error";
 
 interface EDMCachedFileTransfer {
-    id: string;
-    // file_id?: string;
+    _id: string;
+    _rev?: string;
+    file_local_id?: string; // _id in PouchDB 'files' database
+    // file_remote_id?: string;  // file id on backend server
     destination_id?: string;
     status?: TransferStatus;
     bytes_transferred?: number;

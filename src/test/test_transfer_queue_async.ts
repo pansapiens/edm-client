@@ -8,6 +8,7 @@ import * as tmp from 'tmp';
 
 import {settings} from "../lib/settings";
 import {TransferQueuePool} from "../lib/transfer_queue";
+import EDMFile from "../lib/file_tracking";
 import {EDMFileCache} from "../lib/cache";
 
 var eventDebug = require('event-debug');
@@ -111,6 +112,73 @@ describe("The transfer _queue ", function () {
         nock.cleanAll();
     });
 
+    it("should add a file to the transfer _queue when it has pending file transfers", function (done) {
+        setupSettings();
+
+        let now = Math.floor(Date.now() / 1000);
+
+        let real_file = createNewTmpfile(source.basepath);
+        real_file = path.basename(real_file);
+
+        const size = 1024;
+        let cachedFile = {
+            _id: EDMFile.generateID(source.basepath, real_file),
+            remote_id: "some_id_assigned_by_backend_server",
+            source_id: source.id,
+            mtime: now,
+            size: size,
+            hash: EDMFile.computeHash(real_file, size, now),
+            // transfers: [transferRecord],
+        } as EDMCachedFile;
+
+        let transferRecord = {
+                _id: randomString(),
+                file_local_id: cachedFile._id,
+                destination_id: destination.id,
+                status: "new",
+                bytes_transferred: 0,
+        } as EDMCachedFileTransfer;
+
+        let replyData = {
+            data: {
+                updateFileTransfer: {
+                    clientMutationId: mutation_id,
+                    file_transfer: {
+                        id: transferRecord._id,
+                        // status:"new" as TransferStatus,
+                        // status: "queued" as TransferStatus,
+                        status: "uploading" as TransferStatus,
+                        bytes_transferred: 999,
+                    },
+                }
+            }
+        };
+        let mockBackend = prepareForGqlRequest(replyData, 11);
+        mockBackend.persist();
+
+        let tq = TransferQueuePool.getQueue(transferRecord.destination_id);
+
+        eventDebug(tq);
+
+        tq.on('transfer_complete', (transfer_id, bytes) => {
+            console.info(`Transfer ${transfer_id} of ${bytes} bytes completed`);
+            done();
+        });
+
+        let cache = new EDMFileCache();
+
+        cache.updateFileTransfers([transferRecord]).then((result) => {
+            return cache.addFile(cachedFile);
+        }).then((putResult) => {
+            expect(putResult.ok).to.be.true;
+            expect(putResult.id).to.equal(cachedFile._id);
+            console.log(`Added new file to cache: ${putResult.id}`);
+        })
+        .catch((error) => {
+            console.error(`Cache put failed: ${error}`);
+        });
+    });
+
     it("should be able to write many transfer jobs to the _queue, " +
         "receive 'finish' event when done", function (done) {
         const number_of_file_transfers = 10;
@@ -141,6 +209,7 @@ describe("The transfer _queue ", function () {
         let completed_transfers = 0;
 
         let tq = TransferQueuePool.getQueue(destination.id);
+        // tq.concurrency = number_of_file_transfers + 1;
         eventDebug(tq);
 
         tq.on('finish', () => {
@@ -165,67 +234,8 @@ describe("The transfer _queue ", function () {
                 file_transfer_id: randomString(),
             } as FileTransferJob;
             jobs.push(job);
-            let saturated = tq.queueTask(job);
-            expect(saturated).to.be.false;
+            let unsaturated = tq.queueTask(job);
+            expect(unsaturated).to.be.true;
         }
-    });
-
-    it("should add a file to the transfer _queue when it has pending file transfers", function (done) {
-        setupSettings();
-
-        let now = Math.floor(Date.now() / 1000);
-
-        let transferRecord = {
-                id: randomString(),
-                destination_id: destination.id,
-                status: "new",
-                bytes_transferred: 0,
-        } as EDMCachedFileTransfer;
-
-        let real_file = createNewTmpfile(source.basepath);
-        real_file = path.basename(real_file);
-
-        let cachedFile = {
-            _id: real_file,
-            mtime: now,
-            size: 1024,
-            hash: `${real_file}_1024_${now}`,
-            transfers: [transferRecord],
-        } as EDMCachedFile;
-
-        let replyData = {
-            data: {
-                updateFileTransfer: {
-                    clientMutationId: mutation_id,
-                    file_transfer: {
-                        id: transferRecord.id,
-                        // status:"new" as TransferStatus,
-                        // status: "queued" as TransferStatus,
-                        status: "uploading" as TransferStatus,
-                        bytes_transferred: 999,
-                    },
-                }
-            }
-        };
-        let mockBackend = prepareForGqlRequest(replyData, 11);
-
-        let tq = TransferQueuePool.getQueue(transferRecord.destination_id);
-
-        eventDebug(tq);
-
-        tq.on('transfer_complete', (transfer_id, bytes) => {
-            console.info(`Transfer ${transfer_id} of ${bytes} bytes completed`);
-            done();
-        });
-
-        let cache = new EDMFileCache(source);
-
-        cache.addFile(cachedFile)
-            .then((putResult) => {
-                console.log(`Added new file to cache: ${putResult.id}`);
-            })
-            .catch((error) => {
-                console.error(`Cache put failed: ${error}`);
-            });
     });
 });

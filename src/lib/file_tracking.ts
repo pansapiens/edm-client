@@ -25,74 +25,64 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as _ from "lodash";
 
 export default class EDMFile {
-    // TODO: these properties should be made readonly, or the hash should
-    //       automatically update if any of these properties are changed
-    //       (eg, make hash readonly and everything else a property with a get/set)
-    _id: string;
-    basepath: string;
-    filepath: string;
-    stats: fs.Stats;
-    hash: string;
-    status: string;
+    readonly _id: string;
+    remote_id: string;  // UUID from the server, TODO: use this as a PouchDB secondary index
 
-    /**
-     * Statuses available:
-     * unknown
-     * uploaded
-     * uploading
-     * interrupted
-     * verifying
-     * new
-     * modified
-     */
+    private _stats: fs.Stats;
+    public get stats() {
+        return this._stats;
+    }
+    public set stats(newStats: fs.Stats) {
+        this._stats = newStats;
+        this._updateHash();
+    }
 
-    constructor(basepath: string, filepath: string, stats?: any) {
-        this.basepath = basepath;
-        this.filepath = filepath;
-        this._id = filepath;
-        if (stats == null) {
-            this.updateStats();
-        }
-        else {
-            this.stats = stats;
-            this._updateHash();
-        }
+    _hash: string;
+    public get hash(): string {
+        return this._hash;
+    }
+
+    constructor(readonly source: EDMSource, readonly filepath: string, stats?: fs.Stats) {
+        this._id = this._generateID();
+        if (stats == null) this.updateStats();
+    }
+
+    public static generateID(basepath: string, filepath: string): string {
+        return `file://${path.join(basepath, filepath)}`;
+    }
+
+    private _generateID(): string {
+        return EDMFile.generateID(this.source.basepath, this.filepath);
     }
 
     private _updateHash() {
-        this.hash = this._computeHash();
+        this._hash = this._computeHash();
     }
 
     private _computeHash(): string {
+        return EDMFile.computeHash(this._id, this.stats.size, this.stats.mtime.getTime());
+    }
+
+    public static computeHash(id: string, size: number, mtime: number): string {
         const format = 'psm';
-        const hash = `${this.filepath}-${this.stats.size}-${this.stats.mtime.getTime()}`;
+        const hash = `${id}-${size}-${mtime}`;
         return `urn:${format}:${hash}`;
     }
 
-    public static computeHash(file: EDMFile): string {
-        return file._computeHash();
-    }
-
     updateStats() {
-        this.stats = fs.statSync(path.resolve(this.basepath, this.filepath));
-        this._updateHash();
+        this.stats = fs.statSync(path.resolve(this.source.basepath, this.filepath));
     }
 
     getPouchDocument(): EDMCachedFile {
         return {
-            _id: this.filepath,
+            _id: this._id,
+            remote_id: this.remote_id,
+            source_id: this.source.id,
             mtime: this.stats.mtime.getTime(),
             size: this.stats.size,
             hash: this.hash,
         } as EDMCachedFile;
-    }
-
-    getGqlVariables() {
-        let variables = _.pick(this.stats, ['size', 'mtime', 'atime', 'ctime', 'birthtime', 'mode']);
-        variables['filepath'] = this.filepath;
-        return variables;
     }
 }

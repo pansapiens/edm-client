@@ -7,18 +7,17 @@ import {ApolloQueryResult} from "apollo-client";
 import * as through2 from 'through2';
 import EDMFile from "./file_tracking";
 import {EDMFileCache} from "./cache";
+import {LocalCache} from "./cache";
 import {EDMQueries} from "./queries";
 
 
 export class EDMFileWatcher {
-    source: EDMSource;
     cache: EDMFileCache;
     filters: any = [];
     lastWalkItems: any;
 
-    constructor(source: any, exclude?: any) {
-        this.source = source;
-        this.cache = new EDMFileCache(this.source);
+    constructor(readonly source: EDMSource, exclude?: any) {
+        this.cache = LocalCache.cache; // new EDMFileCache(this.source);
         if (exclude != null) {
             const excluder = new RegExp(exclude);
             let exclude_filter = (path) => {
@@ -62,8 +61,8 @@ export class EDMFileWatcher {
 
         // console.log(file);
         const relpath = path.relative(this.source.basepath, file.path);
-        let edmFile = new EDMFile(this.source.basepath, relpath, file.stats);
-        this.cache.getEntry(edmFile).then((cached) => {
+        let edmFile = new EDMFile(this.source, relpath, file.stats);
+        this.cache.getFile(edmFile).then((cached) => {
 
             // compare on-disk to local db
             if (this.fileHasChanged(edmFile, cached)) {
@@ -76,11 +75,14 @@ export class EDMFileWatcher {
                         console.error(`Failed to register and cache: ${JSON.stringify(edmFile)} - ${error}`);
                     })
             }
-            console.log(`${cached._id} is in cache (transfers: ${JSON.stringify(cached.transfers)})`);
+            // console.log(`${cached._id} is in cache (transfers: ${JSON.stringify(cached.transfers)})`);
+            console.log(`${cached._id} is in cache.`);
         }).catch((error) => {
             if (error.name === "not_found") {
                 // new file (unknown to client, may be known to server if local cache was cleared)
-                this.registerAndCache(edmFile);
+                this.registerAndCache(edmFile).catch((error) => {
+                    console.log(`Failed to register and cache: ${edmFile._id} - ${error}`);
+                });
             } else {
                 console.error(error);
             }
@@ -110,8 +112,7 @@ export class EDMFileWatcher {
     //     return _.filter(cachedRecord.transfers, {transfer_status: 'new' as TransferStatus});
     // }
 
-    public registerAndCache(localFile: EDMFile, cachedRecord?: EDMCachedFile): Promise<ApolloQueryResult<any>> {
-        let s = this.source;
+    public registerAndCache(localFile: EDMFile, cachedRecord?: EDMCachedFile): Promise<any> { //:Promise<ApolloQueryResult<any>> {
         return EDMQueries.registerFileWithServer(localFile, this.source.name)
             .then((backendResponse) => {
                 let doc: EDMCachedFile = localFile.getPouchDocument();
@@ -119,18 +120,27 @@ export class EDMFileWatcher {
                     doc._id = cachedRecord._id;
                     doc._rev = cachedRecord._rev;
                 }
-                const transfers: GQLEdgeList = _.get(backendResponse.data.createOrUpdateFile.file, 'file_transfers', null);
-                doc.transfers = EDMQueries.unpackFileTransferResponse(transfers);
-                this.cache.addFile(doc).catch((error) => {
-                    console.error(`Cache put failed: ${error}`);
-                });
-                return backendResponse;
+                const gqlResponseTransfers: GQLEdgeList = _.get(backendResponse.data.createOrUpdateFile.file, 'file_transfers', null);
+                //doc.transfers = EDMQueries.unpackFileTransferResponse(gqlResponseTransfers);
+                let transfers = EDMQueries.unpackFileTransferResponse(gqlResponseTransfers);
+                for (let xfer of transfers) {
+                    xfer.file_local_id = localFile._id;
+                }
+
+                return Promise.all([
+                    new Promise((resolve, reject) => { resolve(backendResponse) } ),
+                    this.cache.addFile(doc),
+                    this.cache.updateFileTransfers(transfers)]);
+                //return backendResponse;
             })
-            .catch((error) => {
-                // We get the main GQL error from the server in error.message
-                // and a list in the array errors.graphQLErrors
-                console.error(`ERROR: ${error}`);
-            });
+            // .catch((error) => {
+            //             console.error(`Cache put failed: ${error}`);
+            // })
+            // .catch((error) => {
+            //     // We get the main GQL error from the server in error.message
+            //     // and a list in the array errors.graphQLErrors
+            //     console.error(`ERROR: ${error}`);
+            // });
     }
 
     private handleError(error: any, job?: any) {

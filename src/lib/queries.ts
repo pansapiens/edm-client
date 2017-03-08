@@ -83,6 +83,7 @@ export class EDMQueries {
                 createOrUpdateFile(input: $input) {
                  clientMutationId
                     file {
+                      id
                       filepath
                       file_transfers(first: 999) {
                         edges {
@@ -101,10 +102,10 @@ export class EDMQueries {
                   }
               }`;
         const vars = {
-            "input": {
-                "clientMutationId": mutation_id,
-                "source": {"name": source_name},
-                "file": EDMQueries.getEDMFileGqlVariables(file),
+            input: {
+                clientMutationId: mutation_id,
+                source: {name: source_name},
+                file: EDMQueries.getEDMFileGqlVariables(file),
             }
         };
 
@@ -129,6 +130,8 @@ export class EDMQueries {
         let transfers = [];
         for (let node of transfers_paginated.edges) {
             let xfer = node.node;
+            xfer._id = xfer.id;
+            delete xfer.id;
             xfer.destination_id = xfer.destination.id;
             delete xfer.destination;
             transfers.push(xfer as EDMCachedFileTransfer);
@@ -185,7 +188,7 @@ export class EDMQueries {
                 variables: {
                     input: {
                         clientMutationId: uuidV4(),
-                        id: transfer.id,
+                        id: transfer._id,
                         file_transfer: xfer,
                     }
                 }
